@@ -1,4 +1,5 @@
-bert/**
+data/Friends_bert/
+data/EmotionPush_bert/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
