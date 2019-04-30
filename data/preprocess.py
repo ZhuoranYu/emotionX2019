@@ -5,7 +5,7 @@ def bert_format():
     dataset = ['Friends', 'EmotionPush']
 
     for data in dataset:
-        with open(os.path.join('./', data, data.lower() + '.augmented.json')) as fp:
+        with open(os.path.join('./', data, data.lower() + '.augmented.json'), encoding='utf-8') as fp:
             all_dialogues = json.loads(fp.read())
 
         dialogue_id = 0
@@ -21,19 +21,21 @@ def bert_format():
                 utt_fr = utt_obj['utterance_fr']
                 utt_it = utt_obj['utterance_it']
 
-                with open(os.path.join('./', data + '_bert', data.lower() + '_en.txt'), 'a+') as fp:
+
+                with open(os.path.join('./', data + '_bert', data.lower() + '_en.txt'), 'a+', encoding='utf-8') as fp:
                     fp.write(utt_en + '\n')
 
-                with open(os.path.join('./', data + '_bert', data.lower() + '_de.txt'), 'a+') as fp:
+                with open(os.path.join('./', data + '_bert', data.lower() + '_de.txt'), 'a+', encoding='utf-8') as fp:
                     fp.write(utt_de + '\n')
 
-                with open(os.path.join('./', data + '_bert', data.lower() + '_fr.txt'), 'a+') as fp:
+                with open(os.path.join('./', data + '_bert', data.lower() + '_fr.txt'), 'a+', encoding='utf-8') as fp:
                     fp.write(utt_fr + '\n')
 
-                with open(os.path.join('./', data + '_bert', data.lower() + '_it.txt'), 'a+') as fp:
+                with open(os.path.join('./', data + '_bert', data.lower() + '_it.txt'), 'a+', encoding='utf-8') as fp:
                     fp.write(utt_it + '\n')
 
-                uttDict = {'uid': nested_id, 'annotation': utt_obj['annotation'], 'line_index': line_index}
+                uttDict = {'uid': nested_id, 'annotation': utt_obj['annotation'], 'line_index': line_index, 'speaker': utt_obj['speaker'], 
+                           'utt_en':utt_en, 'utt_de':utt_de, 'utt_fr':utt_fr, 'utt_it':utt_it}
                 uttList.append(uttDict)
 
                 # updates
