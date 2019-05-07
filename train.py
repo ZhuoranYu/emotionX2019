@@ -2,6 +2,8 @@ import os
 import numpy as np
 import argparse
 import json
+import random
+import time
 
 import torch
 from torch.autograd import Variable
@@ -12,8 +14,9 @@ from model import emotionDetector
 from model import x_entropy_loss
 
 annotation_order = ['neural', 'joy', 'sadness', 'fear', 'anger', 'surprise', 'disgust']
+label_order = ['neural', 'joy', 'sadness', 'anger', 'non-neural']
 MAX_WORD_LEN = 15
-
+MAX_SENT_LEN = 24
 
 def evaluate(model, criterion, val_data):
     loss = 0
@@ -21,14 +24,16 @@ def evaluate(model, criterion, val_data):
     total_class = [0] * 7
     un_decided = 0
     for batch_idx, batch in enumerate(val_data):
-        sequence, labels = batch
+        sequence, labels, seq_len = batch
 
         if torch.cuda.is_available():
             sequence, labels = sequence.cuda(), labels.cuda()
         sequence, labels = Variable(sequence), Variable(labels)
         with torch.no_grad():
-            output = model(sequence)
-            loss += criterion(output, labels)
+            output = model(sequence, seq_len)
+            target = unrolling(labels, seq_len)
+
+            loss += criterion(output, target)
             _, pred = torch.max(output.data, 1)
             n_utt = labels.shape[0]
         
@@ -54,10 +59,81 @@ def evaluate(model, criterion, val_data):
     loss /= len(val_data)
     # compute unweighted accuracy
     wa = 0.0
-    for idx, score in enumerate(correct_class):
-        wa += score / total_class[idx]
+    eval_idx = [0, 1, 2, 4]
+    for idx in eval_idx:
+        wa += correct_class[idx] / total_class[idx] # accuracy for each class
     wa /= len(total_class)
     return loss, wa
+
+def unrolling(labels, lengths):
+    result = None
+    for idx, seq_len in enumerate(lengths):
+        for i in range(0, seq_len):
+            next_label = labels[idx, i, :]
+            next_label = next_label.view(1, -1)
+            if result is None:
+                result = next_label
+            else:
+                result = torch.cat([result, next_label], 0)
+    return result
+
+
+
+def create_batch(train_data, batch_size):
+    augmented_train = []
+
+    # unify batches
+    for batch_x, batch_y in train_data:
+        n_utt = batch_x.shape[0]
+        
+        
+        if n_utt < MAX_SENT_LEN:
+            # padding by repeating last utterance
+            residual = MAX_SENT_LEN - n_utt
+            padded_x = batch_x
+            straw_x = batch_x[-1, :, :, :]
+            n_channel, n_word, dim_size = straw_x.shape
+            straw_x = straw_x.view(1, n_channel, n_word, dim_size)
+            padded_y = batch_y
+            straw_y = batch_y[-1, :]
+            n_label = straw_y.shape[0]
+            straw_y = straw_y.view(1, n_label)
+            for i in range(0, residual):
+                padded_x = torch.cat((padded_x, straw_x), 0)
+                padded_y = torch.cat((padded_y, straw_y), 0)
+            augmented_train.append((padded_x, padded_y, n_utt))
+
+        else:
+            augmented_train.append((batch_x, batch_y, n_utt))
+    # now, we have all dialogues with padded or corped to the same number of 
+    # utterances
+    # Generate Batch Now
+    batched_train = []
+    batch_x = None
+    batch_y = None
+    seq_len = []
+    for idx, dialogue in enumerate(augmented_train):
+        batch_tensor_x, batch_tensor_y, original_length = dialogue
+        n_utt, n_channel, n_word, dim_size = batch_tensor_x.shape
+    
+        batch_tensor_x = batch_tensor_x.view(1, n_utt, n_channel, n_word, dim_size)
+        batch_tensor_y = batch_tensor_y.view(1, n_utt, -1)
+        
+        
+        if batch_x is None:
+            batch_x = batch_tensor_x
+            batch_y = batch_tensor_y
+        else:
+            batch_x = torch.cat((batch_x, batch_tensor_x))
+            batch_y = torch.cat((batch_y, batch_tensor_y))
+        seq_len.append(original_length)
+        
+        if idx % batch_size == batch_size - 1:
+            batched_train.append((batch_x, batch_y, seq_len))
+            batch_x = None
+            batch_y = None
+            seq_len = []
+    return batched_train
 
 
 def get_label_vector(annotation):
@@ -68,16 +144,27 @@ def get_label_vector(annotation):
     return label
 
 
-def load_data(data_samples, data_type):
+def load_data(data_samples, data_type, batch_size):
     '''
     data_samples: train or develop
     data_type: indicator of training or developing
     return: pytorch data loader
     '''
     bert_data = []
+    min_utt = 10000
+    max_utt = 0
+    avg_utt = 0
+    count_utt = 0
     for dialogue in data_samples:
         batch_x = None
         batch_y = None
+        n_utt = len(dialogue)
+        if n_utt < min_utt:
+            min_utt = n_utt
+        if n_utt > max_utt:
+            max_utt = n_utt 
+        count_utt += 1
+        avg_utt += n_utt
         for utterance in dialogue:
             utt_x = None
             vector = np.array(utterance['embedding']).reshape(1, 768)
@@ -85,32 +172,42 @@ def load_data(data_samples, data_type):
             # sequence embedding
             tokens = utterance['tokens']
             n_tok = 0
+            
             for tok in tokens:
                 if n_tok >= MAX_WORD_LEN:
                     break
+                value = tok['layers'][0]['values']
                 if utt_x is None:
-                    utt_x = np.array(tok['layers']).reshape(1, 768)
+                    utt_x = np.array(value).reshape(1, 768)
                 else:
-                    curr_utt = np.array(tok['layers']).reshape(1, 768)
+                    curr_utt = np.array(value).reshape(1, 768)
                     utt_x = np.vstack((utt_x, curr_utt))
                 n_tok += 1
+            if n_tok < MAX_WORD_LEN:
+                padding = np.zeros((MAX_WORD_LEN - n_tok, 768))
+                utt_x = np.vstack((utt_x, padding))
+            
             # create weighted label
             annotation = utterance['annotation']
             label = get_label_vector(annotation) # weighted vector label
 
             # stack CLS and words
             utt_x = np.vstack((vector, utt_x))
+
+            utt_x = utt_x.reshape((1, 1, -1, 768)) # (n_utt, channel, n_word, dim_size)
             if batch_x is None:
                 batch_x = utt_x
+            else:
+                batch_x = np.concatenate((batch_x, utt_x), axis=0)
+            if batch_y is None:
                 batch_y = label
             else:
-                batch_x = np.vstack((batch_x, utt_x))
                 batch_y = np.vstack((batch_y, label))
+         
         batch_x = torch.tensor(batch_x, dtype=torch.float32)
         batch_y = torch.tensor(batch_y, dtype=torch.float32)
         bert_data.append((batch_x, batch_y))
-
-
+                
     return bert_data
 
 
@@ -129,7 +226,7 @@ def train(model, criterion, train_data, develop_data, optimizer, scheduler, num_
         scheduler.step()
 
         for batch_idx, batch in enumerate(train_data):
-            sequence, labels = batch
+            sequence, labels, seq_len = batch
             model.train(True)
 
             if use_gpu:
@@ -139,8 +236,11 @@ def train(model, criterion, train_data, develop_data, optimizer, scheduler, num_
             labels = Variable(labels)
 
             optimizer.zero_grad()
-            outputs = model(sequence)
-            loss = criterion(outputs, labels)
+            outputs = model(sequence, seq_len)
+
+            target = unrolling(labels, seq_len)
+
+            loss = criterion(outputs, target)
             
             loss.backward(retain_graph=True)
             optimizer.step()
@@ -199,8 +299,8 @@ with open(os.path.join(params.input_dir, 'develop', 'en_develop.json')) as fp:
     developing_samples = json.loads(fp.read())
 
 # Raw Training Data
-training_data = load_data(training_samples, 'training')
-developing_data = load_data(developing_samples, 'developing')
+training_data = load_data(training_samples, 'training', params.batch_size)
+developing_data = load_data(developing_samples, 'developing', params.batch_size)
 
 # Augmented Data
 # with open(os.path.join(params.input_dir, 'train', 'de_train.json')) as fp:
@@ -210,11 +310,11 @@ developing_data = load_data(developing_samples, 'developing')
 # with open(os.path.join(params.input_dir, 'train', 'it_train.json')) as fp:
 #     it_augment = json.loads(fp.read())
 
+batch_train = create_batch(training_data, params.batch_size)
+batch_dev = create_batch(developing_data, params.batch_size)
 
 
-model = emotionDetector(params.lstm_dim, len(annotation_order), params.lstm_dropout, params.cnn_dropout) 
-
-
+model = emotionDetector(params.lstm_dim, len(annotation_order), params.lstm_dropout, params.cnn_dropout, params.batch_size) 
 
 if params.optimizer == 'sgd':
     optimizer = optim.SGD(model.parameters(), lr=params.lr)
@@ -222,7 +322,7 @@ elif params.optimizer == 'adam':
     optimizer = optim.Adam(model.parameters(), lr=params.lr)
 scheduler = lr_scheduler.StepLR(optimizer, step_size=5, gamma=params.lr_decay)
 criterion = x_entropy_loss()
-model = train(model, criterion, training_data, developing_data, optimizer, scheduler, params.epochs, log_interval=params.display)
+model = train(model, criterion, batch_train, batch_dev, optimizer, scheduler, params.epochs, log_interval=params.display)
 
 
 if __name__ == "__main__":
