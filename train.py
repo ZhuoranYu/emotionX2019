@@ -8,140 +8,65 @@ import time
 import torch
 from torch.autograd import Variable
 import torch.nn as nn
+import torch.nn.functional as F
 from torch import optim
 from torch.optim import lr_scheduler
 from model import emotionDetector
-from model import x_entropy_loss
+from loss import FocalLoss
 
-annotation_order = ['neural', 'joy', 'sadness', 'fear', 'anger', 'surprise', 'disgust']
+
+annotation_order = ['neural', 'joy', 'sadness', 'fear', 'anger', 'surprise', 'disgust', 'non-neural']
 label_order = ['neural', 'joy', 'sadness', 'anger', 'non-neural']
 MAX_WORD_LEN = 15
 MAX_SENT_LEN = 24
 
 def evaluate(model, criterion, val_data):
     loss = 0
-    correct_class = [0] * 7
-    total_class = [0] * 7
+    correct_class = [0] * 8
+    total_class = [0] * 8
     un_decided = 0
     for batch_idx, batch in enumerate(val_data):
-        sequence, labels, seq_len = batch
+        sequence, labels = batch
 
         if torch.cuda.is_available():
             sequence, labels = sequence.cuda(), labels.cuda()
         sequence, labels = Variable(sequence), Variable(labels)
         with torch.no_grad():
-            output = model(sequence, seq_len)
-            target = unrolling(labels, seq_len)
+            output = model(sequence)
 
-            loss += criterion(output, target)
+            loss += criterion(output, labels)
             _, pred = torch.max(output.data, 1)
-            n_utt = labels.shape[0]
+            n_utt = output.shape[0]
         
             for i in range(0, n_utt):
-                l = labels[i, :] # label of current utt
-                l_list = l.tolist()
-
-                # skip padding
-                if sum(l_list) == 0:
-                    continue
-
-                for weight in l:
-                    if l_list.count(weight) > 1 and weight != 0: # if this weight is not unique, skip
-                        # non-neural
-                        un_decided += 1
-                    else:
-                        l = l.view(1, -1)
-                        _, true_label = torch.max(l.data, 1)
-                        if pred[i] == true_label:
-                            correct_class[true_label] += 1
-                        total_class[true_label] += 1
+                l = labels[i] # label of current utt
+                
+                if pred[i] == l:
+                    correct_class[l] += 1
+                total_class[l] += 1
     
     loss /= len(val_data)
     # compute unweighted accuracy
     wa = 0.0
     eval_idx = [0, 1, 2, 4]
+    accList = []
     for idx in eval_idx:
-        wa += correct_class[idx] / total_class[idx] # accuracy for each class
-    wa /= len(total_class)
-    return loss, wa
-
-def unrolling(labels, lengths):
-    result = None
-    for idx, seq_len in enumerate(lengths):
-        for i in range(0, seq_len):
-            next_label = labels[idx, i, :]
-            next_label = next_label.view(1, -1)
-            if result is None:
-                result = next_label
-            else:
-                result = torch.cat([result, next_label], 0)
-    return result
-
-
-
-def create_batch(train_data, batch_size):
-    augmented_train = []
-
-    # unify batches
-    for batch_x, batch_y in train_data:
-        n_utt = batch_x.shape[0]
-        
-        
-        if n_utt < MAX_SENT_LEN:
-            # padding by repeating last utterance
-            residual = MAX_SENT_LEN - n_utt
-            padded_x = batch_x
-            straw_x = batch_x[-1, :, :, :]
-            n_channel, n_word, dim_size = straw_x.shape
-            straw_x = straw_x.view(1, n_channel, n_word, dim_size)
-            padded_y = batch_y
-            straw_y = batch_y[-1, :]
-            n_label = straw_y.shape[0]
-            straw_y = straw_y.view(1, n_label)
-            for i in range(0, residual):
-                padded_x = torch.cat((padded_x, straw_x), 0)
-                padded_y = torch.cat((padded_y, straw_y), 0)
-            augmented_train.append((padded_x, padded_y, n_utt))
-
-        else:
-            augmented_train.append((batch_x, batch_y, n_utt))
-    # now, we have all dialogues with padded or corped to the same number of 
-    # utterances
-    # Generate Batch Now
-    batched_train = []
-    batch_x = None
-    batch_y = None
-    seq_len = []
-    for idx, dialogue in enumerate(augmented_train):
-        batch_tensor_x, batch_tensor_y, original_length = dialogue
-        n_utt, n_channel, n_word, dim_size = batch_tensor_x.shape
-    
-        batch_tensor_x = batch_tensor_x.view(1, n_utt, n_channel, n_word, dim_size)
-        batch_tensor_y = batch_tensor_y.view(1, n_utt, -1)
-        
-        
-        if batch_x is None:
-            batch_x = batch_tensor_x
-            batch_y = batch_tensor_y
-        else:
-            batch_x = torch.cat((batch_x, batch_tensor_x))
-            batch_y = torch.cat((batch_y, batch_tensor_y))
-        seq_len.append(original_length)
-        
-        if idx % batch_size == batch_size - 1:
-            batched_train.append((batch_x, batch_y, seq_len))
-            batch_x = None
-            batch_y = None
-            seq_len = []
-    return batched_train
-
+        acc = correct_class[idx] / total_class[idx]
+        accList.append(acc)
+        wa += acc # accuracy for each class
+    wa /= 4
+    print(total_class[0], total_class[1], total_class[2], total_class[4])
+    return loss, wa, accList
 
 def get_label_vector(annotation):
     annotation = list(annotation)
     annotation = [int(l) for l in annotation]
     annotation = np.array(annotation)
-    label = annotation / np.sum(annotation)
-    return label
+    max_idx = np.argmax(annotation)
+    annotation = annotation.tolist()
+    if annotation.count(annotation[max_idx]) != 1:
+        max_idx = 7
+    return max_idx
 
 
 def load_data(data_samples, data_type, batch_size):
@@ -200,18 +125,34 @@ def load_data(data_samples, data_type, batch_size):
             else:
                 batch_x = np.concatenate((batch_x, utt_x), axis=0)
             if batch_y is None:
-                batch_y = label
+                batch_y = np.array(label)
             else:
-                batch_y = np.vstack((batch_y, label))
+                batch_y = np.hstack((batch_y, label))
          
         batch_x = torch.tensor(batch_x, dtype=torch.float32)
-        batch_y = torch.tensor(batch_y, dtype=torch.float32)
+        batch_y = torch.tensor(batch_y)
         bert_data.append((batch_x, batch_y))
                 
     return bert_data
 
+def data_augmentation(train_data, train_de, train_fr, train_it):
+    augmented_data = []
+    
+    for batch_idx, batch in enumerate(train_data):
+        dice = random.randint(0, 3)
+        if dice == 0:
+            augmented_data.append(batch)
+        elif dice == 1:
+            augmented_data.append(train_de[batch_idx])
+        elif dice == 2:
+            augmented_data.append(train_fr[batch_idx])
+        elif dice == 3:
+            augmented_data.append(train_it[batch_idx])
+    random.shuffle(augmented_data)
+    return augmented_data
 
-def train(model, criterion, train_data, develop_data, optimizer, scheduler, num_epochs, log_interval=100):
+
+def train(model, criterion, train_data, develop_data, optimizer, scheduler, num_epochs, train_de, train_fr, train_it, log_interval=10):
     best_model_wts = model.state_dict()
     best_acc = 0.0
 
@@ -224,9 +165,9 @@ def train(model, criterion, train_data, develop_data, optimizer, scheduler, num_
         print('Epoch {}/{}'.format(epoch, num_epochs - 1))
         print('-' * 10)
         scheduler.step()
-
-        for batch_idx, batch in enumerate(train_data):
-            sequence, labels, seq_len = batch
+        augmented_train = data_augmentation(train_data, train_de, train_fr, train_it)
+        for batch_idx, batch in enumerate(augmented_train):
+            sequence, labels = batch
             model.train(True)
 
             if use_gpu:
@@ -236,24 +177,24 @@ def train(model, criterion, train_data, develop_data, optimizer, scheduler, num_
             labels = Variable(labels)
 
             optimizer.zero_grad()
-            outputs = model(sequence, seq_len)
+            outputs = model(sequence)
 
-            target = unrolling(labels, seq_len)
-
-            loss = criterion(outputs, target)
+            loss = criterion(outputs, labels)
             
             loss.backward(retain_graph=True)
             optimizer.step()
  
             examples_this_epoch += sequence.shape[0]
             if batch_idx % log_interval == 0:
-                val_loss, val_acc = evaluate(model, criterion, develop_data)
+                val_loss, val_acc, accList = evaluate(model, criterion, develop_data)
                 train_loss = loss.data
                 epoch_progress = 100. * batch_idx / len(train_data)
                 print('Train Epoch: {} [{}/{} ({:.0f}%)]\t'
                       'Train Loss: {:.6f}\tVal Loss: {:0.6f}\tVal Unweighted Acc: {}'.format(
                     epoch, examples_this_epoch, len(train_data), 
                     epoch_progress, train_loss, val_loss, val_acc))
+                print("Validation accuracy for each class: %f %f %f %f" % (accList[0], 
+                    accList[1], accList[2], accList[3]))
                 if val_acc > best_acc:
                     best_acc = val_acc
                     best_model_wts = model.state_dict()
@@ -288,6 +229,13 @@ parser.add_argument("--fc_dim", type=int, default=1)
 parser.add_argument("--max_dia_len", type=int, default=32)
 parser.add_argument("--display", type=int, default=100)
 
+# focal loss
+parser.add_argument("--focal_gamma", type=float, default=2)
+#parser.add_argument("--focal_alpha", type=float, default=0.25)
+
+focal_alpha = [0.1, 0.15, 0.6, 0, 0.15, 0, 0, 0]
+
+
 params = parser.parse_args()
 if not os.path.exists(params.output_dir):
     os.makedirs(params.output_dir)
@@ -302,6 +250,18 @@ with open(os.path.join(params.input_dir, 'develop', 'en_develop.json')) as fp:
 training_data = load_data(training_samples, 'training', params.batch_size)
 developing_data = load_data(developing_samples, 'developing', params.batch_size)
 
+#data augmentation
+with open(os.path.join(params.input_dir, 'train', "de_train.json")) as fp:
+    training_de_samples = json.loads(fp.read())
+with open(os.path.join(params.input_dir, 'train', 'fr_train.json')) as fp:
+    training_fr_samples = json.loads((fp.read()))
+with open(os.path.join(params.input_dir, 'train', 'it_train.json')) as fp:
+    training_it_samples = json.loads((fp.read()))
+training_data_de = load_data(training_de_samples, 'training', params.batch_size)
+training_data_fr = load_data(training_fr_samples, 'training', params.batch_size)
+training_data_it = load_data(training_it_samples, 'training', params.batch_size)
+
+
 # Augmented Data
 # with open(os.path.join(params.input_dir, 'train', 'de_train.json')) as fp:
 #     de_augment = json.loads(fp.read())
@@ -310,8 +270,8 @@ developing_data = load_data(developing_samples, 'developing', params.batch_size)
 # with open(os.path.join(params.input_dir, 'train', 'it_train.json')) as fp:
 #     it_augment = json.loads(fp.read())
 
-batch_train = create_batch(training_data, params.batch_size)
-batch_dev = create_batch(developing_data, params.batch_size)
+#batch_train = create_batch(training_data, params.batch_size)
+#batch_dev = create_batch(developing_data, params.batch_size)
 
 
 model = emotionDetector(params.lstm_dim, len(annotation_order), params.lstm_dropout, params.cnn_dropout, params.batch_size) 
@@ -321,8 +281,13 @@ if params.optimizer == 'sgd':
 elif params.optimizer == 'adam':
     optimizer = optim.Adam(model.parameters(), lr=params.lr)
 scheduler = lr_scheduler.StepLR(optimizer, step_size=5, gamma=params.lr_decay)
-criterion = x_entropy_loss()
-model = train(model, criterion, batch_train, batch_dev, optimizer, scheduler, params.epochs, log_interval=params.display)
+
+#criterion = nn.CrossEntropyLoss(weight=class_weights)
+criterion = FocalLoss(params.focal_gamma, focal_alpha)
+model = train(model, criterion, training_data, developing_data, optimizer, scheduler, 
+        params.epochs, training_data_de, training_data_fr, training_data_it, log_interval=params.display)
+
+torch.save(model, './friends.pth')
 
 
 if __name__ == "__main__":

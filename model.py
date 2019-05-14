@@ -5,7 +5,10 @@ import torch.nn.functional as F
 
 from torch.nn.utils.rnn import pack_padded_sequence
 from torch.nn.utils.rnn import pad_packed_sequence
+from torch.nn.parameter import Parameter
+import math
 
+from transformer import Transformer
 
 class textCNN(nn.Module):
     def __init__(self, drop_rate):
@@ -50,17 +53,59 @@ class textCNN(nn.Module):
         result = result.view(N, -1)
         return result
 
-# self-defined loss function to handle 
-# vector labels
-class x_entropy_loss(nn.Module):
-    def __init__(self):
-        super(x_entropy_loss, self).__init__()
+class resLSTM(nn.Module):
+    def __init__(self, lstm_dim, lstm_drop_rate):
+        super(resLSTM, self).__init__()
+        self.hidden_dim = lstm_dim
+        self.gru1 = nn.GRU(768*2, self.hidden_dim, num_layers=1, bidirectional=True, batch_first=True)
+        self.gru2 = nn.GRU(768*2, self.hidden_dim, num_layers=1, bidirectional=True, batch_first=True)
+        self.gru3 = nn.GRU(768*2, self.hidden_dim, num_layers=1, bidirectional=True, batch_first=True)
+        self.gru4 = nn.GRU(768*2, self.hidden_dim, num_layers=1, bidirectional=True, batch_first=True)
+        self.gru5 = nn.GRU(768*2, self.hidden_dim, num_layers=1, bidirectional=True, batch_first=True)
+        self.gru6 = nn.GRU(768*2, self.hidden_dim, num_layers=1, bidirectional=True, batch_first=True)
+        self.drop_rate = lstm_drop_rate
 
-    def forward(self, pred, target):
-        pred = F.log_softmax(pred, dim=1)
-        loss = pred * target
-        return -torch.sum(loss) / target.shape[0]
+        self.fc1 = nn.Linear(self.hidden_dim * 2, 768*2)
+        self.fc2 = nn.Linear(self.hidden_dim * 2, 768*2)
+        self.fc3 = nn.Linear(self.hidden_dim * 2, 768*2)
+        self.fc4 = nn.Linear(self.hidden_dim * 2, 768*2)
+        self.fc5 = nn.Linear(self.hidden_dim * 2, 768*2)
+        self.fc6 = nn.Linear(self.hidden_dim * 2, 768*2)
 
+    def init_hidden(self):
+        return (autograd.Variable(torch.randn(2, 1, self.hidden_dim).cuda()))
+
+    def forward(self, x):
+        h10 = self.init_hidden()
+        h20 = self.init_hidden()
+        h30 = self.init_hidden()
+        h40 = self.init_hidden()
+        gru_out1, h1n = self.gru1(x)
+        gru_out1 = self.fc1(gru_out1)
+        x = F.relu(gru_out1) + x # res connection
+
+        gru_out2, h2n = self.gru2(x)
+        gru_out2 = self.fc2(gru_out2)
+        x = F.relu(gru_out2) + x # res connection
+
+        gru_out3, h3n = self.gru3(x)
+        gru_out3 = self.fc3(gru_out3)
+        x = F.relu(gru_out3) + x # res connection
+
+        gru_out4, h4n = self.gru4(x)
+        gru_out4 = self.fc4(gru_out4)
+        x = F.relu(gru_out4) + x
+
+        gru_out5, h5n = self.gru5(x)
+        gru_out5 = self.fc5(gru_out5)
+        x = F.relu(gru_out5) + x
+
+        gru_out6, h6n = self.gru6(x)
+        gru_out6 = self.fc6(gru_out6)
+        x = F.relu(gru_out6) + x
+
+        x = F.dropout(x, self.drop_rate, training=self.training)
+        return x
 
 # Main Model
 class emotionDetector(nn.Module):
@@ -69,16 +114,13 @@ class emotionDetector(nn.Module):
 
         self.text_cnn = textCNN(text_drop_rate)
         self.hidden_dim = lstm_dim
-        self.gru = nn.GRU(768, self.hidden_dim, num_layers=1, bidirectional=True, batch_first=True)
-    
-        self.dr = nn.Linear(768*2, 512)
-
+        self.max_seq_len = 24
+        self.resLSTM = resLSTM(self.hidden_dim, lstm_drop_rate)
         self.batch_size = batch_size
-        self.fc = nn.Linear(2* lstm_dim, n_classes)
+        self.fc = nn.Linear(768*2, n_classes)
         nn.init.xavier_uniform_(self.fc.weight)
-        self.hidden = self.init_hidden()
-        self.softmax = nn.Softmax(dim=1)
-        self.drop_rate = lstm_drop_rate
+
+        self.trans = Transformer(dim=768*2)
 
     def unrolling(self, x, lengths):
         result = None
@@ -94,48 +136,35 @@ class emotionDetector(nn.Module):
 
 
     def init_hidden(self):
-        return (autograd.Variable(torch.randn(2, self.batch_size, self.hidden_dim).cuda()))
+        return (autograd.Variable(torch.randn(2, 1, self.hidden_dim).cuda()))
                 #autograd.Variable(torch.randn(2, 1, self.hidden_dim).cuda()))
 
-    def forward(self, x, seq_len):
-        n_batch, n_utt, n_channel, n_word, dim_size = x.shape
+    def forward(self, x):
+        n_utt, n_channel, n_word, dim_size = x.shape
 
         ################ CNN ######################
-        #seq_x = x[:, :,  1:, :]  # sequence embedding
-        sent_x = x[:, :, :, 0, :]  # sentence embedding
-        sent_x = sent_x.view(n_batch, n_utt, -1)
-        #seq_x = self.text_cnn(seq_x)
+        seq_x = x[:, :,  1:, :]  # sequence embedding
+        sent_x = x[:, :, 0, :]  # sentence embedding
+        sent_x = sent_x.view(n_utt, -1)
+        seq_x = self.text_cnn(seq_x)
 
-        #x = torch.cat((seq_x, sent_x), 1)
-        #x = F.dropout(x, 0.1, training=self.training)
-        #x = self.dr(x)
-        x = sent_x
+        x = torch.cat((seq_x, sent_x), 1)
+        x = x.view(1, n_utt, -1)
 
         ############### RNN ####################
-        # padding
-        seq_len = torch.Tensor(seq_len)
-        seq_len = seq_len.cuda()
-        _, idx_sort = torch.sort(seq_len, dim=0, descending=True)
-        idx_sort = idx_sort.cuda()
-        _, idx_unsort = torch.sort(idx_sort, dim=0, descending=False)
-        idx_unsort = idx_unsort.cuda()
-        sequence = x.index_select(0, idx_sort)
-        lengths = list(seq_len[idx_sort])
-        seq_packed = nn.utils.rnn.pack_padded_sequence(input=sequence, lengths=lengths, batch_first=True)
+        x = self.resLSTM(x)
 
-        h0= self.init_hidden()
-
-        x = x.view(n_batch, n_utt, -1)
-        gru_out, hn = self.gru(seq_packed, h0)
-
-        x_padded = nn.utils.rnn.pad_packed_sequence(gru_out, batch_first=True)
-        x = x_padded[0].index_select(0, idx_unsort) # padded sequence
-
-        x = self.unrolling(x, seq_len.tolist())
+        ############### TRANSFORMER ENCODER #########
+        res = self.max_seq_len - n_utt
+        if res != 0:
+            padding = torch.zeros(1, res, 1536).cuda()
+            x = torch.cat([x, padding], 1)
+        x = self.trans(x)
 
         x = self.fc(x)
 
-        x = F.dropout(x, self.drop_rate, training=self.training)
+        x = x.view(self.max_seq_len, -1)
+        x = x[:n_utt, :]
 
         scores = x
             
