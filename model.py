@@ -80,27 +80,29 @@ class resLSTM(nn.Module):
         h20 = self.init_hidden()
         h30 = self.init_hidden()
         h40 = self.init_hidden()
-        gru_out1, h1n = self.gru1(x)
+        h50 = self.init_hidden()
+        h60 = self.init_hidden()
+        gru_out1, h1n = self.gru1(x, h10)
         gru_out1 = self.fc1(gru_out1)
         x = F.relu(gru_out1) + x # res connection
 
-        gru_out2, h2n = self.gru2(x)
+        gru_out2, h2n = self.gru2(x, h20)
         gru_out2 = self.fc2(gru_out2)
         x = F.relu(gru_out2) + x # res connection
 
-        gru_out3, h3n = self.gru3(x)
+        gru_out3, h3n = self.gru3(x, h30)
         gru_out3 = self.fc3(gru_out3)
         x = F.relu(gru_out3) + x # res connection
 
-        gru_out4, h4n = self.gru4(x)
+        gru_out4, h4n = self.gru4(x, h40)
         gru_out4 = self.fc4(gru_out4)
         x = F.relu(gru_out4) + x
 
-        gru_out5, h5n = self.gru5(x)
+        gru_out5, h5n = self.gru5(x, h50)
         gru_out5 = self.fc5(gru_out5)
         x = F.relu(gru_out5) + x
 
-        gru_out6, h6n = self.gru6(x)
+        gru_out6, h6n = self.gru6(x, h60)
         gru_out6 = self.fc6(gru_out6)
         x = F.relu(gru_out6) + x
 
@@ -121,6 +123,9 @@ class emotionDetector(nn.Module):
         nn.init.xavier_uniform_(self.fc.weight)
 
         self.trans = Transformer(dim=768*2)
+        for p in self.trans.parameters():
+            if p.dim() > 1:
+                nn.init.xavier_uniform_(p)
 
     def unrolling(self, x, lengths):
         result = None
@@ -155,16 +160,17 @@ class emotionDetector(nn.Module):
         x = self.resLSTM(x)
 
         ############### TRANSFORMER ENCODER #########
-        res = self.max_seq_len - n_utt
-        if res != 0:
-            padding = torch.zeros(1, res, 1536).cuda()
-            x = torch.cat([x, padding], 1)
-        x = self.trans(x)
+        #res = self.max_seq_len - n_utt
+        #if res != 0:
+        #    padding = torch.zeros(1, res, 1536).cuda()
+        #    x = torch.cat([x, padding], 1)
+        #x = self.trans(x)
 
         x = self.fc(x)
+        x = x.view(n_utt, -1)
 
-        x = x.view(self.max_seq_len, -1)
-        x = x[:n_utt, :]
+        #x = x.view(self.max_seq_len, -1)
+        #x = x[:n_utt, :]
 
         scores = x
             

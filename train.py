@@ -14,6 +14,7 @@ from torch.optim import lr_scheduler
 from model import emotionDetector
 from loss import FocalLoss
 
+from weight_init import weight_init
 
 annotation_order = ['neural', 'joy', 'sadness', 'fear', 'anger', 'surprise', 'disgust', 'non-neural']
 label_order = ['neural', 'joy', 'sadness', 'anger', 'non-neural']
@@ -55,7 +56,6 @@ def evaluate(model, criterion, val_data):
         accList.append(acc)
         wa += acc # accuracy for each class
     wa /= 4
-    print(total_class[0], total_class[1], total_class[2], total_class[4])
     return loss, wa, accList
 
 def get_label_vector(annotation):
@@ -199,6 +199,11 @@ def train(model, criterion, train_data, develop_data, optimizer, scheduler, num_
                     best_acc = val_acc
                     best_model_wts = model.state_dict()
                     location = (epoch, batch_idx)
+        #val_loss, val_acc, accList = evaluate(model, criterion, develop_data)
+        #normed_weights = [(1 - accList[0]) / sum(accList), (1 - accList[1]) / sum(accList), 
+        #                   (1 - accList[2]) / sum(accList), 0, (1 - accList[3]) / sum(accList), 
+        #                   0, 0, 0]
+        #criterion = FocalLoss(2, normed_weights)
     print('Best val Acc: {:.4f} obtained at epoch: {}, batch: {}'.format(best_acc, location[0], location[1]))
     model.load_state_dict(best_model_wts)
     return model
@@ -250,6 +255,22 @@ with open(os.path.join(params.input_dir, 'develop', 'en_develop.json')) as fp:
 training_data = load_data(training_samples, 'training', params.batch_size)
 developing_data = load_data(developing_samples, 'developing', params.batch_size)
 
+class_count = [0] * 8
+for batch in training_data:
+    x, y = batch
+    y = y.tolist()
+    for i in y:
+        class_count[i] += 1
+for batch in developing_data:
+    x, y = batch
+    y = y.tolist()
+    for i in y:
+        class_count[i] += 1
+
+for i in range(0, 8):
+    print(annotation_order[i], class_count[i])
+
+
 #data augmentation
 with open(os.path.join(params.input_dir, 'train', "de_train.json")) as fp:
     training_de_samples = json.loads(fp.read())
@@ -263,18 +284,21 @@ training_data_it = load_data(training_it_samples, 'training', params.batch_size)
 
 
 # Augmented Data
-# with open(os.path.join(params.input_dir, 'train', 'de_train.json')) as fp:
-#     de_augment = json.loads(fp.read())
-# with open(os.path.join(params.input_dir, 'train', 'fr_train.json')) as fp:
-#     fr_augment = json.loads(fp.read())
-# with open(os.path.join(params.input_dir, 'train', 'it_train.json')) as fp:
-#     it_augment = json.loads(fp.read())
+with open(os.path.join(params.input_dir, 'train', 'de_train.json')) as fp:
+    de_augment = json.loads(fp.read())
+with open(os.path.join(params.input_dir, 'train', 'fr_train.json')) as fp:
+    fr_augment = json.loads(fp.read())
+with open(os.path.join(params.input_dir, 'train', 'it_train.json')) as fp:
+    it_augment = json.loads(fp.read())
 
 #batch_train = create_batch(training_data, params.batch_size)
 #batch_dev = create_batch(developing_data, params.batch_size)
 
 
 model = emotionDetector(params.lstm_dim, len(annotation_order), params.lstm_dropout, params.cnn_dropout, params.batch_size) 
+
+for p in model.parameters():
+    weight_init(p)
 
 if params.optimizer == 'sgd':
     optimizer = optim.SGD(model.parameters(), lr=params.lr)
