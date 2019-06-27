@@ -38,14 +38,14 @@ def evaluate(model, criterion, val_data):
             loss += criterion(output, labels)
             _, pred = torch.max(output.data, 1)
             n_utt = output.shape[0]
-        
+
             for i in range(0, n_utt):
                 l = labels[i] # label of current utt
-                
+
                 if pred[i] == l:
                     correct_class[l] += 1
                 total_class[l] += 1
-    
+
     loss /= len(val_data)
     # compute unweighted accuracy
     wa = 0.0
@@ -87,7 +87,7 @@ def load_data(data_samples, data_type, batch_size):
         if n_utt < min_utt:
             min_utt = n_utt
         if n_utt > max_utt:
-            max_utt = n_utt 
+            max_utt = n_utt
         count_utt += 1
         avg_utt += n_utt
         for utterance in dialogue:
@@ -97,7 +97,7 @@ def load_data(data_samples, data_type, batch_size):
             # sequence embedding
             tokens = utterance['tokens']
             n_tok = 0
-            
+
             for tok in tokens:
                 if n_tok >= MAX_WORD_LEN:
                     break
@@ -111,7 +111,7 @@ def load_data(data_samples, data_type, batch_size):
             if n_tok < MAX_WORD_LEN:
                 padding = np.zeros((MAX_WORD_LEN - n_tok, 768))
                 utt_x = np.vstack((utt_x, padding))
-            
+
             # create weighted label
             annotation = utterance['annotation']
             label = get_label_vector(annotation) # weighted vector label
@@ -128,16 +128,16 @@ def load_data(data_samples, data_type, batch_size):
                 batch_y = np.array(label)
             else:
                 batch_y = np.hstack((batch_y, label))
-         
+
         batch_x = torch.tensor(batch_x, dtype=torch.float32)
         batch_y = torch.tensor(batch_y)
         bert_data.append((batch_x, batch_y))
-                
+
     return bert_data
 
 def data_augmentation(train_data, train_de, train_fr, train_it):
     augmented_data = []
-    
+
     for batch_idx, batch in enumerate(train_data):
         dice = random.randint(0, 3)
         if dice == 0:
@@ -180,10 +180,10 @@ def train(model, criterion, train_data, develop_data, optimizer, scheduler, num_
             outputs = model(sequence)
 
             loss = criterion(outputs, labels)
-            
+
             loss.backward(retain_graph=True)
             optimizer.step()
- 
+
             examples_this_epoch += sequence.shape[0]
             if batch_idx % log_interval == 0:
                 val_loss, val_acc, accList = evaluate(model, criterion, develop_data)
@@ -191,23 +191,23 @@ def train(model, criterion, train_data, develop_data, optimizer, scheduler, num_
                 epoch_progress = 100. * batch_idx / len(train_data)
                 print('Train Epoch: {} [{}/{} ({:.0f}%)]\t'
                       'Train Loss: {:.6f}\tVal Loss: {:0.6f}\tVal Unweighted Acc: {}'.format(
-                    epoch, examples_this_epoch, len(train_data), 
+                    epoch, examples_this_epoch, len(train_data),
                     epoch_progress, train_loss, val_loss, val_acc))
-                print("Validation accuracy for each class: %f %f %f %f" % (accList[0], 
+                print("Validation accuracy for each class: %f %f %f %f" % (accList[0],
                     accList[1], accList[2], accList[3]))
                 if val_acc > best_acc:
                     best_acc = val_acc
                     best_model_wts = model.state_dict()
                     location = (epoch, batch_idx)
         #val_loss, val_acc, accList = evaluate(model, criterion, develop_data)
-        #normed_weights = [(1 - accList[0]) / sum(accList), (1 - accList[1]) / sum(accList), 
-        #                   (1 - accList[2]) / sum(accList), 0, (1 - accList[3]) / sum(accList), 
+        #normed_weights = [(1 - accList[0]) / sum(accList), (1 - accList[1]) / sum(accList),
+        #                   (1 - accList[2]) / sum(accList), 0, (1 - accList[3]) / sum(accList),
         #                   0, 0, 0]
         #criterion = FocalLoss(2, normed_weights)
     print('Best val Acc: {:.4f} obtained at epoch: {}, batch: {}'.format(best_acc, location[0], location[1]))
     model.load_state_dict(best_model_wts)
     return model
-                
+
 
 
 parser = argparse.ArgumentParser()
@@ -221,14 +221,14 @@ parser.add_argument("--model_name", type=str, default="model.pickle")
 parser.add_argument("--epochs", type=int, default=30)
 parser.add_argument("--batch_size", type=int, default=8)
 parser.add_argument("--embedding_size", type=int, default=768)
-parser.add_argument("--lstm_dropout", type=float, default=0.4)
+parser.add_argument("--gru_dropout", type=float, default=0.4)
 parser.add_argument("--cnn_dropout", type=float, default=0.4)
 parser.add_argument("--optimizer", type=str, default="sgd")
 parser.add_argument("--lr", type=float, default=0.001)
 parser.add_argument("--lr_decay", type=float, default=0.5)
 parser.add_argument("--minlr", type=float, default=2e-5)
 
-parser.add_argument("--lstm_dim", type=int, default=256)
+parser.add_argument("--gru_dim", type=int, default=256)
 parser.add_argument("--encoder_dim", type=int, default=1)
 parser.add_argument("--fc_dim", type=int, default=1)
 parser.add_argument("--max_dia_len", type=int, default=32)
@@ -295,7 +295,7 @@ with open(os.path.join(params.input_dir, 'train', 'it_train.json')) as fp:
 #batch_dev = create_batch(developing_data, params.batch_size)
 
 
-model = emotionDetector(params.lstm_dim, len(annotation_order), params.lstm_dropout, params.cnn_dropout, params.batch_size) 
+model = emotionDetector(params.gru_dim, len(annotation_order), params.gru_dropout, params.cnn_dropout, params.batch_size)
 
 for p in model.parameters():
     weight_init(p)
@@ -308,7 +308,7 @@ scheduler = lr_scheduler.StepLR(optimizer, step_size=5, gamma=params.lr_decay)
 
 #criterion = nn.CrossEntropyLoss(weight=class_weights)
 criterion = FocalLoss(params.focal_gamma, focal_alpha)
-model = train(model, criterion, training_data, developing_data, optimizer, scheduler, 
+model = train(model, criterion, training_data, developing_data, optimizer, scheduler,
         params.epochs, training_data_de, training_data_fr, training_data_it, log_interval=params.display)
 
 torch.save(model, './friends.pth')

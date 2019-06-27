@@ -53,17 +53,17 @@ class textCNN(nn.Module):
         result = result.view(N, -1)
         return result
 
-class resLSTM(nn.Module):
-    def __init__(self, lstm_dim, lstm_drop_rate):
-        super(resLSTM, self).__init__()
-        self.hidden_dim = lstm_dim
+class resGRU(nn.Module):
+    def __init__(self, gru_dim, gru_drop_rate):
+        super(resGRU, self).__init__()
+        self.hidden_dim = gru_dim
         self.gru1 = nn.GRU(768*2, self.hidden_dim, num_layers=1, bidirectional=True, batch_first=True)
         self.gru2 = nn.GRU(768*2, self.hidden_dim, num_layers=1, bidirectional=True, batch_first=True)
         self.gru3 = nn.GRU(768*2, self.hidden_dim, num_layers=1, bidirectional=True, batch_first=True)
         self.gru4 = nn.GRU(768*2, self.hidden_dim, num_layers=1, bidirectional=True, batch_first=True)
         self.gru5 = nn.GRU(768*2, self.hidden_dim, num_layers=1, bidirectional=True, batch_first=True)
         self.gru6 = nn.GRU(768*2, self.hidden_dim, num_layers=1, bidirectional=True, batch_first=True)
-        self.drop_rate = lstm_drop_rate
+        self.drop_rate = gru_drop_rate
 
         self.fc1 = nn.Linear(self.hidden_dim * 2, 768*2)
         self.fc2 = nn.Linear(self.hidden_dim * 2, 768*2)
@@ -111,13 +111,13 @@ class resLSTM(nn.Module):
 
 # Main Model
 class emotionDetector(nn.Module):
-    def __init__(self, lstm_dim, n_classes, lstm_drop_rate, text_drop_rate, batch_size):
+    def __init__(self, gru_dim, n_classes, gru_drop_rate, text_drop_rate, batch_size):
         super(emotionDetector, self).__init__()
 
         self.text_cnn = textCNN(text_drop_rate)
-        self.hidden_dim = lstm_dim
+        self.hidden_dim = gru_dim
         self.max_seq_len = 24
-        self.resLSTM = resLSTM(self.hidden_dim, lstm_drop_rate)
+        self.resGRU = resGRU(self.hidden_dim, gru_drop_rate)
         self.batch_size = batch_size
         self.fc = nn.Linear(768*2, n_classes)
         nn.init.xavier_uniform_(self.fc.weight)
@@ -157,7 +157,7 @@ class emotionDetector(nn.Module):
         x = x.view(1, n_utt, -1)
 
         ############### RNN ####################
-        x = self.resLSTM(x)
+        x = self.resGRU(x)
 
         ############### TRANSFORMER ENCODER #########
         #res = self.max_seq_len - n_utt
@@ -173,6 +173,6 @@ class emotionDetector(nn.Module):
         #x = x[:n_utt, :]
 
         scores = x
-            
+
         return scores
 
